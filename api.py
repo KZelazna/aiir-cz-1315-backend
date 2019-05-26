@@ -7,26 +7,67 @@ import jwt
 import datetime
 from functools import wraps
 import subprocess
+import click
+from flask.cli import with_appcontext
 import sys
 import os
 from werkzeug.utils import secure_filename
-
-app = Flask(__name__)
+from rq.job import Job
+from worker import conn
+from sqlalchemy.orm import relationship
+from rq import Worker, Queue, Connection
+import redis
+app = Flask(__name__, instance_path='/home/kamila/Pulpit/AIIR/backend')
 CORS(app)
 
-UPLOAD_FOLDER = '/Users/krzysztof/Documents/PWr/semestr-6/aiir/aiir-cz-1315-backend/'
+UPLOAD_FOLDER = '//home/kamila/Pulpit/AIIR/backend/'
 ALLOWED_EXTENSIONS = set(['txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif','tsp','atsp'])
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SECRET_KEY'] = 'thisissecret'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://///Users/krzysztof/Documents/PWr/semestr-6/aiir/aiir-cz-1315-backend/todo.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://///home/kamila/Pulpit/AIIR/backend/todo.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['REDIS_URL'] = os.getenv('REDISTOGO_URL', 'redis://localhost:6379')
 db = SQLAlchemy(app)
+q = Queue(connection=conn, name='waiting_tasks')#, is_async=False)
 
 class User(db.Model):
+    __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
     public_id = db.Column(db.String(50), unique=True)
     name = db.Column(db.String(50))
     password = db.Column(db.String(80))
     admin = db.Column(db.Boolean)
+
+
+'''
+class Result(db.Model):
+    __tablename__ = 'result'
+    id = db.Column(db.Integer, primary_key=True)
+    cost = db.Column(db.Integer)
+    tsp_path = db.Column(db.String(2000)) #wypisane miasta w kolejnosci odwiedzania?
+    # można dołożyć pole task, jeśli chcemy mieć relację w obie strony
+
+class Task(db.Model):
+    __tablename__ = 'task'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('User.id'))
+    user = relationship("User")
+    result = relationship("Result") 
+    completed = db.Column(db.Boolean)
+'''
+
+#odpalanie z konsoli: flask run_worker albo "ogólnie" rqworker waiting_tasks
+@click.command('run_worker')
+@with_appcontext 
+def run_worker():
+    print("aaaaaaaa", file=sys.stdout)
+    redis_url = app.config['REDIS_URL']
+    redis_connection = redis.from_url(redis_url)
+    with Connection(redis_connection):
+        worker = Worker('waiting_tasks')
+        worker.work()
+
+app.cli.add_command(run_worker)
 
 def token_required(f):
     @wraps(f)
@@ -124,31 +165,79 @@ def delete_user(current_user, public_id):
 
     return jsonify({'message' : 'Usunięto użytkownika'})
 
+#głupie funkcje testujące wywołanie zwykłego programu i kolejkowanie zadań
+@app.route('/koty/')
+def koty():
+    aaa="/home/kamila/Pulpit/AIIR/backend/hello1 20 koty"# > /home/kamila/Pulpit/AIIR/backend/koty.txt"
+    os.system(aaa)
+    pass
+    #return jsonify({'message' : 'Koty sa mile'})
+
+@app.route('/piesy/')
+def piesy():
+    print('AAA', file=sys.stdout)
+    aaa="/home/kamila/Pulpit/AIIR/backend/hello1 20 piesy"
+    os.system(aaa)
+    return jsonify({'message' : 'Piesy sa mile'})
+
+@app.route('/razem/')
+def razem():
+    
+    q.enqueue_call(
+            func=piesy
+        )
+    #dane są dodawane do bazy od razu po zakolejkowaniu zadania - można dodać taska "completed=False"
+    hashed_password = generate_password_hash('aaa', method='sha256')
+
+    new_user = User(public_id=str(uuid.uuid4()), name='KOTY888', password=hashed_password, admin=False)
+    db.session.add(new_user)
+    db.session.commit()
+    return jsonify({'message' : 'Razem sa mile'})
+
+#właściwa funkcja do zlecenia obliczeń
 @app.route('/startCalc', methods=['POST'])
-def mpi():
+@token_required
+def start_calc(current_user):
     target=os.path.join(UPLOAD_FOLDER,'test_docs')
     if not os.path.isdir(target):
         os.mkdir(target)
     file = request.files['file'] 
     print(file)
     filename = secure_filename(file.filename)
-    destination="/".join([target, filename])
+    destination = "/".join([target, filename])
     file.save(destination)
-    session['uploadFilePath']=destination
-
+    session['uploadFilePath'] = destination
     n = session['uploadFilePath'] #Sciezka do pliku
-    myCMD = 'mpirun -n 2 /home/lukasz/MPITest 1 '
+    new_task = Task(user=current_user, completed=False)
+    db.session.add(new_task)
+    db.session.commit()
+    q.enqueue_call(
+            func=mpi, args=(n, new_task)
+        )
+    return jsonify({'message' : 'Rozpoczęto obliczenia'})
+
+def mpi(n, task):
+    #myCMD = 'mpirun -n 2 /home/lukasz/MPITest 1 ' #ta będzie docelowo
+    myCMD = '/home/kamila/Pulpit/AIIR/backend/hello1 20 piesy' 
     out = ' > out.txt'
-    cmd = myCMD + n + out
+    #cmd = myCMD + n + out
+    cmd = myCMD + out
     os.system(cmd)
     print(cmd)
     f = open("out.txt","r")
 
     contents = f.read()
     print(contents)
-
     f.close()
-    return jsonify({'result' : str(contents)})
+    
+    new_result = Result(cost=-1, tsp_path='brak danych')
+    task.completed = True
+    result.tsp_path = contents
+    task.result = new_result
+    db.session.commit()
+
+    return jsonify({'result' : str(contents)}) 
+
 '''def connect():
     HOST="lukasz@192.168.0.110"
     data = request.get_json()
