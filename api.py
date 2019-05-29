@@ -21,7 +21,7 @@ app = Flask(__name__, instance_path='/home/kamila/Pulpit/AIIR/backend')
 CORS(app)
 
 UPLOAD_FOLDER = '//home/kamila/Pulpit/AIIR/backend/'
-ALLOWED_EXTENSIONS = set(['txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif','tsp','atsp'])
+ALLOWED_EXTENSIONS = set(['txt'])
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SECRET_KEY'] = 'thisissecret'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://///home/kamila/Pulpit/AIIR/backend/todo.db'
@@ -29,6 +29,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['REDIS_URL'] = os.getenv('REDISTOGO_URL', 'redis://localhost:6379')
 db = SQLAlchemy(app)
 q = Queue(connection=conn, name='waiting_tasks')#, is_async=False)
+session['file_number'] = 0
 
 class User(db.Model):
     __tablename__ = 'user'
@@ -40,6 +41,7 @@ class User(db.Model):
 
 
 '''
+#doprowadzić do działania, jeśli chcemy przechowywać wyniki w bazie
 class Result(db.Model):
     __tablename__ = 'result'
     id = db.Column(db.Integer, primary_key=True)
@@ -165,78 +167,54 @@ def delete_user(current_user, public_id):
 
     return jsonify({'message' : 'Usunięto użytkownika'})
 
-#głupie funkcje testujące wywołanie zwykłego programu i kolejkowanie zadań
-@app.route('/koty/')
-def koty():
-    aaa="/home/kamila/Pulpit/AIIR/backend/hello1 20 koty"# > /home/kamila/Pulpit/AIIR/backend/koty.txt"
-    os.system(aaa)
-    pass
-    #return jsonify({'message' : 'Koty sa mile'})
-
-@app.route('/piesy/')
-def piesy():
-    print('AAA', file=sys.stdout)
-    aaa="/home/kamila/Pulpit/AIIR/backend/hello1 20 piesy"
-    os.system(aaa)
-    return jsonify({'message' : 'Piesy sa mile'})
-
-@app.route('/razem/')
-def razem():
-    
-    q.enqueue_call(
-            func=piesy
-        )
-    #dane są dodawane do bazy od razu po zakolejkowaniu zadania - można dodać taska "completed=False"
-    hashed_password = generate_password_hash('aaa', method='sha256')
-
-    new_user = User(public_id=str(uuid.uuid4()), name='KOTY888', password=hashed_password, admin=False)
-    db.session.add(new_user)
-    db.session.commit()
-    return jsonify({'message' : 'Razem sa mile'})
-
-#właściwa funkcja do zlecenia obliczeń
 @app.route('/startCalc', methods=['POST'])
-@token_required
-def start_calc(current_user):
-    target=os.path.join(UPLOAD_FOLDER,'test_docs')
+#@token_required
+def start_calc():#current_user):
+    target=os.path.join(app.config['UPLOAD_FOLDER'],'test_docs')
     if not os.path.isdir(target):
         os.mkdir(target)
-    file = request.files['file'] 
-    print(file)
-    filename = secure_filename(file.filename)
-    destination = "/".join([target, filename])
-    file.save(destination)
-    session['uploadFilePath'] = destination
-    n = session['uploadFilePath'] #Sciezka do pliku
+    file = request.files['file']
+    '''
+    if file.filename == '':
+            flash('No selected file')
+            return redirect(request.url)
+    ''' 
+    #print(file)
+    if file and allowed_file(file.filename):
+        session['file_number'] += 1     #unikamy dubli - najlepiej z jakims hashem
+        filename = secure_filename(file.filename) + session['file_number']
+        destination = "/".join([target, filename])
+        file.save(destination)
+    '''
     new_task = Task(user=current_user, completed=False)
     db.session.add(new_task)
     db.session.commit()
+    '''
     q.enqueue_call(
-            func=mpi, args=(n, new_task)
+            func=mpi, args=(filename)#, new_task)
         )
     return jsonify({'message' : 'Rozpoczęto obliczenia'})
 
-def mpi(n, task):
-    #myCMD = 'mpirun -n 2 /home/lukasz/MPITest 1 ' #ta będzie docelowo
-    myCMD = '/home/kamila/Pulpit/AIIR/backend/hello1 20 piesy' 
+def mpi(filename):#, task):
+    #można to bardziej elegancko zrobić, pobierajac w mpi filename jako argument
+    #chyba że to koliduje z czymś jeszcze
+    os.system('rm -f input.txt')
+    myCMD = 'mv ' + filename + 'input.txt'
+    os.system(myCMD)
+    myCMD = 'mpirun -n 2 /home/kamila/Pulpit/AIIR/backend/MPITest ' #ta będzie docelowo
+    
     out = ' > out.txt'
-    #cmd = myCMD + n + out
     cmd = myCMD + out
     os.system(cmd)
-    print(cmd)
-    f = open("out.txt","r")
-
-    contents = f.read()
-    print(contents)
-    f.close()
-    
+    '''
     new_result = Result(cost=-1, tsp_path='brak danych')
     task.completed = True
     result.tsp_path = contents
     task.result = new_result
     db.session.commit()
-
-    return jsonify({'result' : str(contents)}) 
+    '''
+    pass
+    #return jsonify({'result' : str(contents)}) 
 
 '''def connect():
     HOST="lukasz@192.168.0.110"
